@@ -3,16 +3,12 @@
 #include <HT_st7735.h>
 
 // Configuración de la pantalla
-#define TFT_CS   5   // Pin CS
-#define TFT_RST  4   // Pin RESET
-#define TFT_DC   2   // Pin DC
-HT_ST7735 tft = HT_ST7735(TFT_CS, TFT_DC, TFT_RST);
+HT_st7735 st7735; // Declaración del objeto de pantalla
 
 // Configuración LoRa
 #define BAND 915E6 // Frecuencia LoRa
 
 void setup() {
-  // Configuración inicial
   Serial.begin(9600);
   while (!Serial);
 
@@ -24,15 +20,14 @@ void setup() {
   Serial.println("LoRa inicializado");
 
   // Inicializar pantalla
-  tft.init();
-  tft.setRotation(0); // Ajusta la rotación según tu pantalla
-  tft.fillScreen(ST7735_BLACK);
-  tft.setTextColor(ST7735_WHITE);
-  tft.setTextSize(1);
+  st7735.st7735_init(); // Inicializar la pantalla
+  st7735.st7735_fill_screen(ST7735_BLACK); // Limpiar pantalla
+  st7735.st7735_set_text_color(ST7735_WHITE); // Configurar color del texto
+  st7735.st7735_set_text_size(1); // Configurar tamaño del texto
 
   // Mostrar inicio en la pantalla
-  tft.setCursor(0, 0);
-  tft.println("Transmisor Iniciado");
+  st7735.st7735_set_cursor(0, 0);
+  st7735.st7735_print("Transmisor Iniciado");
   delay(2000); // Pausa inicial
 }
 
@@ -49,12 +44,14 @@ void loop() {
   LoRa.endPacket();
 
   // Mostrar mensaje en la pantalla
-  tft.fillScreen(ST7735_BLACK); // Limpiar pantalla
-  tft.setCursor(0, 0);
-  tft.println("Enviando:");
-  tft.println(message);
+  st7735.st7735_fill_screen(ST7735_BLACK); // Limpiar pantalla
+  st7735.st7735_set_cursor(0, 0);
+  st7735.st7735_print("Enviando:");
+  st7735.st7735_set_cursor(0, 10); // Ajustar posición para el siguiente texto
+  st7735.st7735_print(message);
 
   // Incrementar el contador
   counter = (counter % 10) + 1; // Resetear a 1 después del 10
   delay(2000); // Intervalo de 2 segundos
 }
+
