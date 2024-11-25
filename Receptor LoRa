@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <LoRaWan_APP.h>
+#include <Arduino_MQTT_Client.h>
 #include <ThingsBoard.h>
 
 // Configuración WiFi
@@ -9,6 +10,7 @@
 // Configuración ThingsBoard
 #define TOKEN "ACCESS_TOKEN"
 #define THINGSBOARD_SERVER "demo.thingsboard.io"
+#define MAX_MESSAGE_SIZE 512
 
 // Configuración LoRa
 #define RF_FREQUENCY 915000000
@@ -26,14 +28,16 @@
 
 // Variables globales
 WiFiClient espClient;
-ThingsBoard tb;
+Arduino_MQTT_Client mqttClient(espClient);
+ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE);
+
 char rxPacket[BUFFER_SIZE];
 char txPacket[BUFFER_SIZE]; // Buffer para transmisión
 
 float voltage = 0.0;
 float current = 0.0;
 float signal = 0.0;
-int relayStatus = 0; // Ahora es entero: 1 (encendido), 0 (apagado)
+int relayStatus = 0; // 1 (encendido), 0 (apagado)
 float power = 0.0;
 float consumption = 0.0;
 
@@ -42,11 +46,15 @@ unsigned long lastDataUpdate = 0;
 
 static RadioEvents_t RadioEvents;
 
+// Prototipos
+void sendRelayInstructionToA();
+void resetLoRaReception();
+
 void setup() {
   Serial.begin(115200);
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
-  // Inicializar WiFi
+  // Conexión WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -54,13 +62,15 @@ void setup() {
   }
   Serial.println("\nConectado a WiFi");
 
-  // Inicializar ThingsBoard
-  if (!tb.connect(THINGSBOARD_SERVER, TOKEN)) {
-    Serial.println("Error al conectar con ThingsBoard");
-  }
-  // Inicializar ThingsBoard
-  if (!tb.begin(espClient, THINGSBOARD_SERVER, TOKEN)) {
-    Serial.println("Error al conectar con ThingsBoard");
+  // Inicializar ThingsBoard con MQTT
+  mqttClient.setId(TOKEN);
+  mqttClient.setUsernamePassword(TOKEN, nullptr);
+
+  if (!mqttClient.connect(THINGSBOARD_SERVER, 1883)) {
+    Serial.println("Error al conectar con el servidor MQTT");
+  } else {
+    Serial.println("Conexión exitosa al servidor MQTT");
+    setupRPC(); // Configurar callbacks para recibir comandos RPC
   }
 
   // Configurar LoRa
@@ -91,12 +101,12 @@ void loop() {
                   voltage, current, signal, relayStatus);
   }
 
-  // Calcular y enviar potencia y consumo cada 60 segundos
-  if (currentTime - lastPowerUpdate >= 60000) {
+  // Calcular y enviar potencia y consumo cada 10 segundos
+  if (currentTime - lastPowerUpdate >= 10000) {
     lastPowerUpdate = currentTime;
 
     power = voltage * current;
-    consumption += power * (60.0 / 3600.0); // kWh aproximado
+    consumption += power * (10.0 / 3600.0); // kWh aproximado
 
     tb.sendTelemetryData("Power", String(power));
     tb.sendTelemetryData("Consumption", String(consumption));
@@ -130,16 +140,13 @@ void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
 void processRelayCommand(int command) {
   if (command == 1 || command == 0) {
     relayStatus = command;
-    snprintf(txPacket, BUFFER_SIZE, "RELAY:%d", relayStatus);
 
-    // Interrumpir recepción de datos y enviar comando al módulo A
-    Radio.Standby();
-    Radio.Send((uint8_t *)txPacket, strlen(txPacket));
-    Serial.printf("Comando enviado: %s\n", txPacket);
+    // Enviar instrucción al módulo A
+    sendRelayInstructionToA();
 
-    // Reanudar recepción de datos
-    delay(500); // Breve pausa para garantizar la transmisión
-    Radio.Rx(0);
+    // Reanudar recepción LoRa después de 5 segundos
+    delay(5000);
+    resetLoRaReception();
   }
 }
 
@@ -154,6 +161,22 @@ void onRelayControlReceived(const RPC_Response &response) {
 // Configurar el callback para RPC en el setup
 void setupRPC() {
   tb.subscribeRPC("RelayControl", onRelayControlReceived);
+}
+
+// Función para enviar instrucción al módulo A
+void sendRelayInstructionToA() {
+  snprintf(txPacket, BUFFER_SIZE, "RELAY:%d", relayStatus);
+
+  // Interrumpir recepción de datos y enviar comando al módulo A
+  Radio.Standby();
+  Radio.Send((uint8_t *)txPacket, strlen(txPacket));
+  Serial.printf("Comando enviado al módulo A: %s\n", txPacket);
+}
+
+// Función para reanudar recepción de datos LoRa
+void resetLoRaReception() {
+  Serial.println("Reanudando recepción de datos LoRa...");
+  Radio.Rx(0); // Volver a modo recepción
 }
 
 
