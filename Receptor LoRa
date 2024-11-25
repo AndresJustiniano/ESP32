@@ -1,78 +1,159 @@
-#include "LoRaWan_APP.h"
-#include "Arduino.h"
+#include <WiFi.h>
+#include <LoRaWan_APP.h>
+#include <ThingsBoard.h>
 
+// Configuración WiFi
+#define WIFI_SSID "SSID_WIFI"
+#define WIFI_PASSWORD "PASSWORD_WIFI"
 
-#define RF_FREQUENCY                                915000000 // Hz
+// Configuración ThingsBoard
+#define TOKEN "ACCESS_TOKEN"
+#define THINGSBOARD_SERVER "demo.thingsboard.io"
 
-#define TX_OUTPUT_POWER                             14        // dBm
+// Configuración LoRa
+#define RF_FREQUENCY 915000000
+#define TX_OUTPUT_POWER 14
 
-#define LORA_BANDWIDTH                              0         // [0: 125 kHz,
-                                                              //  1: 250 kHz,
-                                                              //  2: 500 kHz,
-                                                              //  3: Reserved]
-#define LORA_SPREADING_FACTOR                       7         // [SF7..SF12]
-#define LORA_CODINGRATE                             1         // [1: 4/5,
-                                                              //  2: 4/6,
-                                                              //  3: 4/7,
-                                                              //  4: 4/8]
-#define LORA_PREAMBLE_LENGTH                        8         // Same for Tx and Rx
-#define LORA_SYMBOL_TIMEOUT                         0         // Symbols
-#define LORA_FIX_LENGTH_PAYLOAD_ON                  false
-#define LORA_IQ_INVERSION_ON                        false
+#define LORA_BANDWIDTH 0
+#define LORA_SPREADING_FACTOR 7
+#define LORA_CODINGRATE 1
+#define LORA_PREAMBLE_LENGTH 8
+#define LORA_SYMBOL_TIMEOUT 0
+#define LORA_FIX_LENGTH_PAYLOAD_ON false
+#define LORA_IQ_INVERSION_ON false
 
+#define BUFFER_SIZE 64
 
-#define RX_TIMEOUT_VALUE                            1000
-#define BUFFER_SIZE                                 30 // Define the payload size here
+// Variables globales
+WiFiClient espClient;
+ThingsBoard tb;
+char rxPacket[BUFFER_SIZE];
+char txPacket[BUFFER_SIZE]; // Buffer para transmisión
 
-char txpacket[BUFFER_SIZE];
-char rxpacket[BUFFER_SIZE];
+float voltage = 0.0;
+float current = 0.0;
+float signal = 0.0;
+int relayStatus = 0; // Ahora es entero: 1 (encendido), 0 (apagado)
+float power = 0.0;
+float consumption = 0.0;
+
+unsigned long lastPowerUpdate = 0;
+unsigned long lastDataUpdate = 0;
 
 static RadioEvents_t RadioEvents;
 
-int16_t txNumber;
-
-int16_t rssi,rxSize;
-
-bool lora_idle = true;
-
 void setup() {
-    Serial.begin(115200);
-    Mcu.begin(HELTEC_BOARD,SLOW_CLK_TPYE);
-    
-    txNumber=0;
-    rssi=0;
-  
-    RadioEvents.RxDone = OnRxDone;
-    Radio.Init( &RadioEvents );
-    Radio.SetChannel( RF_FREQUENCY );
-    Radio.SetRxConfig( MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
-                               LORA_CODINGRATE, 0, LORA_PREAMBLE_LENGTH,
-                               LORA_SYMBOL_TIMEOUT, LORA_FIX_LENGTH_PAYLOAD_ON,
-                               0, true, 0, 0, LORA_IQ_INVERSION_ON, true );
+  Serial.begin(115200);
+  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+
+  // Inicializar WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConectado a WiFi");
+
+  // Inicializar ThingsBoard
+  if (!tb.connect(THINGSBOARD_SERVER, TOKEN)) {
+    Serial.println("Error al conectar con ThingsBoard");
+  }
+  // Inicializar ThingsBoard
+  if (!tb.begin(espClient, THINGSBOARD_SERVER, TOKEN)) {
+    Serial.println("Error al conectar con ThingsBoard");
+  }
+
+  // Configurar LoRa
+  RadioEvents.TxDone = OnTxDone;
+  RadioEvents.RxDone = OnRxDone;
+  Radio.Init(&RadioEvents);
+
+  Radio.SetChannel(RF_FREQUENCY);
+  Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                    0, LORA_PREAMBLE_LENGTH, LORA_SYMBOL_TIMEOUT,
+                    LORA_FIX_LENGTH_PAYLOAD_ON, 0, true, 0, 0, LORA_IQ_INVERSION_ON, true);
+  Radio.Rx(0); // Iniciar en modo recepción
 }
 
+void loop() {
+  // Actualizar datos a ThingsBoard
+  unsigned long currentTime = millis();
 
+  if (currentTime - lastDataUpdate >= 5000) {
+    lastDataUpdate = currentTime;
 
-void loop()
-{
-  if(lora_idle)
-  {
-    lora_idle = false;
-    Serial.println("into RX mode");
+    tb.sendTelemetryData("Voltage", String(voltage));
+    tb.sendTelemetryData("Current", String(current));
+    tb.sendTelemetryData("Signal", String(signal));
+    tb.sendTelemetryData("RelayStatus", relayStatus); // Enviar como entero
+
+    Serial.printf("Datos enviados a ThingsBoard:\nVoltage: %.2f, Current: %.2f, Signal: %.2f, Relay: %d\n",
+                  voltage, current, signal, relayStatus);
+  }
+
+  // Calcular y enviar potencia y consumo cada 60 segundos
+  if (currentTime - lastPowerUpdate >= 60000) {
+    lastPowerUpdate = currentTime;
+
+    power = voltage * current;
+    consumption += power * (60.0 / 3600.0); // kWh aproximado
+
+    tb.sendTelemetryData("Power", String(power));
+    tb.sendTelemetryData("Consumption", String(consumption));
+
+    Serial.printf("Potencia: %.2f W, Consumo acumulado: %.2f kWh\n", power, consumption);
+  }
+
+  tb.loop(); // Mantener conexión con ThingsBoard
+}
+
+void OnTxDone() {
+  Serial.println("Transmisión completada.");
+}
+
+void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
+  payload[size] = '\0'; // Finalizar string
+  String receivedData = String((char *)payload);
+
+  Serial.printf("Paquete recibido: %s\n", receivedData.c_str());
+
+  // Parsear datos recibidos
+  if (sscanf(receivedData.c_str(), "V:%f,C:%f,S:%f,R:%d", &voltage, &current, &signal, &relayStatus) == 4) {
+    Serial.printf("Datos parseados: Voltage=%.2f, Current=%.2f, Signal=%.2f, Relay=%d\n",
+                  voltage, current, signal, relayStatus);
+  } else {
+    Serial.println("Error al parsear los datos recibidos.");
+  }
+}
+
+// Función para procesar cambios en el estado del relé desde ThingsBoard
+void processRelayCommand(int command) {
+  if (command == 1 || command == 0) {
+    relayStatus = command;
+    snprintf(txPacket, BUFFER_SIZE, "RELAY:%d", relayStatus);
+
+    // Interrumpir recepción de datos y enviar comando al módulo A
+    Radio.Standby();
+    Radio.Send((uint8_t *)txPacket, strlen(txPacket));
+    Serial.printf("Comando enviado: %s\n", txPacket);
+
+    // Reanudar recepción de datos
+    delay(500); // Breve pausa para garantizar la transmisión
     Radio.Rx(0);
   }
-  Radio.IrqProcess( );
 }
 
-void OnRxDone( uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr )
-{
-    rssi=rssi;
-    rxSize=size;
-    memcpy(rxpacket, payload, size );
-    rxpacket[size]='\0';
-    Radio.Sleep( );
-    Serial.printf("\r\nreceived packet \"%s\" with rssi %d , length %d\r\n",rxpacket,rssi,rxSize);
-    lora_idle = true;
+// Callback para recibir datos desde ThingsBoard
+void onRelayControlReceived(const RPC_Response &response) {
+  if (response.key == "RelayControl") {
+    int command = response.value.toInt();
+    processRelayCommand(command);
+  }
+}
+
+// Configurar el callback para RPC en el setup
+void setupRPC() {
+  tb.subscribeRPC("RelayControl", onRelayControlReceived);
 }
 
 
