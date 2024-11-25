@@ -22,12 +22,7 @@ void setup() {
   // Inicializar pantalla
   st7735.st7735_init(); // Inicializar la pantalla
   st7735.st7735_fill_screen(ST7735_BLACK); // Limpiar pantalla
-  st7735.st7735_set_text_color(ST7735_WHITE); // Configurar color del texto
-  st7735.st7735_set_text_size(1); // Configurar tamaño del texto
-
-  // Mostrar inicio en la pantalla
-  st7735.st7735_set_cursor(0, 0);
-  st7735.st7735_print("Transmisor Iniciado");
+  st7735.st7735_write_str(0, 0, "Transmisor Iniciado"); // Escribir texto inicial
   delay(2000); // Pausa inicial
 }
 
@@ -45,13 +40,12 @@ void loop() {
 
   // Mostrar mensaje en la pantalla
   st7735.st7735_fill_screen(ST7735_BLACK); // Limpiar pantalla
-  st7735.st7735_set_cursor(0, 0);
-  st7735.st7735_print("Enviando:");
-  st7735.st7735_set_cursor(0, 10); // Ajustar posición para el siguiente texto
-  st7735.st7735_print(message);
+  st7735.st7735_write_str(0, 0, "Enviando:"); // Escribir título
+  st7735.st7735_write_str(0, 20, message.c_str()); // Escribir el número enviado
 
   // Incrementar el contador
   counter = (counter % 10) + 1; // Resetear a 1 después del 10
   delay(2000); // Intervalo de 2 segundos
 }
+
 
