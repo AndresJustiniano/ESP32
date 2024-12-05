@@ -2,7 +2,7 @@
 
 // Configuración LoRa
 #define RF_FREQUENCY 915000000
-#define TX_OUTPUT_POWER 14
+#define TX_OUTPUT_POWER 7
 
 #define LORA_BANDWIDTH 0
 #define LORA_SPREADING_FACTOR 7
@@ -15,10 +15,9 @@
 // Variables a enviar
 float voltage;
 float current;
-float sonda;       // Cambiamos el nombre de la variable 'signal' a 'sonda'
-int relayStatus;   // 0: Apagado, 1: Encendido
-float temperature; // Temperatura en °C
-float humidity;    // Humedad en %
+float sonda;
+float temperature;   // Variable para almacenar la temperatura
+float humidity;      // Variable para almacenar la humedad
 
 unsigned long lastSendTime = 0;
 const unsigned long sendInterval = 5000; // Enviar datos cada 5 segundos
@@ -27,57 +26,56 @@ static RadioEvents_t RadioEvents;
 
 // Función para inicializar LoRa
 void setupLoRa() {
-  RadioEvents.TxDone = OnTxDone;
-  RadioEvents.RxDone = nullptr;
-  Radio.Init(&RadioEvents);
+    RadioEvents.TxDone = OnTxDone;
+    RadioEvents.RxDone = nullptr;
+    Radio.Init(&RadioEvents);
 
-  Radio.SetChannel(RF_FREQUENCY);
-  Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH, 
-                    LORA_SPREADING_FACTOR, LORA_CODINGRATE,
-                    LORA_PREAMBLE_LENGTH, false,
-                    true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
+    Radio.SetChannel(RF_FREQUENCY);
+    Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
+                      LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                      LORA_PREAMBLE_LENGTH, false,
+                      true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
 }
 
 // Función que se llama al completar la transmisión
 void OnTxDone() {
-  Serial.println("Datos transmitidos.");
-  Radio.Rx(0); // Volver a modo recepción (por si se requiere en el futuro)
+    Serial.println("Datos transmitidos.");
+    Radio.Rx(0); // Volver a modo recepción (por si se requiere en el futuro)
 }
 
 void setup() {
-  Serial.begin(115200);
-  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+    Serial.begin(115200);
+    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
-  // Configurar LoRa
-  setupLoRa();
+    // Configurar LoRa
+    setupLoRa();
 
-  Serial.println("Módulo transmisor inicializado.");
+    Serial.println("Módulo transmisor inicializado.");
 }
 
 void loop() {
-  unsigned long currentTime = millis();
+    unsigned long currentTime = millis();
 
-  if (currentTime - lastSendTime >= sendInterval) {
-    lastSendTime = currentTime;
+    if (currentTime - lastSendTime >= sendInterval) {
+        lastSendTime = currentTime;
 
-    // Generar datos aleatorios
-    voltage = random(210, 240) + random(0, 100) / 100.0;    // Voltaje entre 210V y 240V
-    current = random(1, 15) + random(0, 100) / 100.0;       // Corriente entre 1A y 15A
-    sonda = random(50, 100) + random(0, 100) / 100.0;       // Sonda entre 50 y 100
-    relayStatus = random(0, 2);                             // Estado del relé: 0 o 1
-    temperature = random(20, 30) + random(0, 100) / 100.0;  // Temperatura entre 20°C y 30°C
-    humidity = random(40, 60) + random(0, 100) / 100.0;     // Humedad entre 40% y 60%
+        // Generar datos aleatorios para voltaje, corriente, sonda, temperatura y humedad
+        voltage = random(210, 240) + random(0, 100) / 100.0;    // Voltaje entre 210V y 240V
+        current = random(1, 15) + random(0, 100) / 100.0;       // Corriente entre 1A y 15A
+        sonda = random(50, 100) + random(0, 100) / 100.0;       // Sonda entre 50 y 100
+        temperature = random(15, 30) + random(0, 100) / 100.0;   // Temperatura entre 15°C y 30°C
+        humidity = random(30, 80) + random(0, 100) / 100.0;      // Humedad entre 30% y 80%
 
-    // Crear mensaje para enviar
-    char txPacket[128];
-    snprintf(txPacket, sizeof(txPacket), 
-             "V:%.2f,C:%.2f,S:%.2f,R:%d,T:%.2f,H:%.2f", 
-             voltage, current, sonda, relayStatus, temperature, humidity);
+        // Crear mensaje para enviar
+        char txPacket[128]; // Asegúrate de que el buffer sea suficientemente grande
+        snprintf(txPacket, sizeof(txPacket),
+                 "V:%.2f,C:%.2f,S:%.2f,T:%.2f,H:%.2f", 
+                 voltage, current, sonda, temperature, humidity);
 
-    // Mostrar datos en Serial
-    Serial.printf("Enviando datos: %s\n", txPacket);
+        // Mostrar datos en Serial
+        Serial.printf("Enviando datos: %s\n", txPacket);
 
-    // Enviar datos
-    Radio.Send((uint8_t *)txPacket, strlen(txPacket));
-  }
+        // Enviar datos
+        Radio.Send((uint8_t *)txPacket, strlen(txPacket));
+    }
 }
