@@ -1,19 +1,15 @@
-#include <WiFi.h>
-#include <LoRaWan_APP.h>
-#include <Arduino_MQTT_Client.h>
-#include <ThingsBoard.h>
+#include "WiFi.h"
+#include "Arduino.h"
+#include "PubSubClient.h"
+#include "LoRaWan_APP.h"
+#include "ThingsBoard.h"
 
-// Configuración WiFi
-#define WIFI_SSID "SSID_WIFI"
-#define WIFI_PASSWORD "PASSWORD_WIFI"
-
-// Configuración ThingsBoard
-#define TOKEN "ACCESS_TOKEN"
-#define THINGSBOARD_SERVER "demo.thingsboard.io"
-#define MAX_MESSAGE_SIZE 512
+// Configuración Wi-Fi
+const char* ssid = "flia justiniano";      // Cambia por tu SSID
+const char* password = "19662019";         // Cambia por tu contraseña Wi-Fi
 
 // Configuración LoRa
-#define RF_FREQUENCY 915000000
+#define RF_FREQUENCY 915000000  // Frecuencia LoRa
 #define TX_OUTPUT_POWER 14
 
 #define LORA_BANDWIDTH 0
@@ -24,159 +20,237 @@
 #define LORA_FIX_LENGTH_PAYLOAD_ON false
 #define LORA_IQ_INVERSION_ON false
 
-#define BUFFER_SIZE 64
+#define RX_TIMEOUT_VALUE 1000
+#define BUFFER_SIZE 30 // Define el tamaño del paquete
 
-// Variables globales
-WiFiClient espClient;
-Arduino_MQTT_Client mqttClient(espClient);
-ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE);
-
-char rxPacket[BUFFER_SIZE];
-char txPacket[BUFFER_SIZE]; // Buffer para transmisión
-
-float voltage = 0.0;
-float current = 0.0;
-float signal = 0.0;
-int relayStatus = 0; // 1 (encendido), 0 (apagado)
-float power = 0.0;
-float consumption = 0.0;
-
-unsigned long lastPowerUpdate = 0;
-unsigned long lastDataUpdate = 0;
+char txpacket[BUFFER_SIZE];
+char rxpacket[BUFFER_SIZE];
 
 static RadioEvents_t RadioEvents;
 
-// Prototipos
-void sendRelayInstructionToA();
-void resetLoRaReception();
+int16_t txNumber;
+int16_t rssi, rxSize;
+bool lora_idle = true;  // Variable para controlar el estado de LoRa
 
+// Variables para almacenar los datos de LoRa recibidos
+float voltage = 0.0;
+float current = 0.0;
+float sonda = 0.0;
+float temperature = 0.0;  // Nueva variable para la temperatura
+float humidity = 0.0;     // Nueva variable para la humedad
+
+// Variables de prueba para enviar a ThingsBoard
+float testVoltage = 0.0;   // Variable para el voltaje recibido
+float testCurrent = 0.0;    // Variable para la corriente recibida
+float testSonda = 0.0;      // Variable para la sonda recibida
+float testTemperature = 0.0;  // Nueva variable de prueba para temperatura
+float testHumidity = 0.0;     // Nueva variable de prueba para humedad
+
+// Variables para la potencia y consumo
+float power = 0.0;         // Potencia en W
+float consumption = 0.0;    // Consumo en Wh
+unsigned long lastPowerCalcTime = 0;
+const unsigned long powerCalcInterval = 5000; // 5 segundos
+
+// Configuración ThingsBoard MQTT
+const char* mqtt_server = "mqtt.thingsboard.cloud";
+const int mqtt_port = 1883;
+const char* access_token = "rc88vfEsTpS0TgW1MD8t"; // Cambia por tu token de ThingsBoard
+
+
+// Configuración Cedalo MQTT
+const char* cedalo_host = "pf-ij2bkvcv06wu0l1enbgp.cedalo.cloud";
+const int cedalo_port = 1883;
+const char* cedalo_user = "usuario";                                  // Usuario para Cedalo
+const char* cedalo_password = "12345Asd";                             // Contraseña para Cedalo
+const char* cedalo_topic = "esp32/data"; // Tópico al que enviar los datos
+
+
+
+// Configuración clientes MQTT
+WiFiClient espClientThingsBoard;
+WiFiClient espClientCedalo;
+PubSubClient client(espClientThingsBoard);
+PubSubClient cedaloClient(espClientCedalo);
+
+// Función de inicialización Wi-Fi
+void setup_wifi() {
+    Serial.println("Conectando a WiFi...");
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print(".");
+    }
+    Serial.println("\nWiFi conectado");
+    Serial.print("Dirección IP: ");
+    Serial.println(WiFi.localIP());
+}
+
+// Función de reconexión MQTT (ThingsBoard)
+void reconnectThingsBoard() {
+    while (!client.connected()) {
+        Serial.print("Conectando a MQTT ThingsBoard...");
+        if (client.connect("ESP32Heltec", access_token, NULL)) {
+            Serial.println("Conectado a ThingsBoard");
+        } else {
+            Serial.print("Falló, rc=");
+            Serial.println(client.state());
+            delay(5000); // Intentar cada 5 segundos si no se conecta
+        }
+    }
+}
+
+// Función de reconexión MQTT (Cedalo)
+void reconnectCedalo() {
+    while (!cedaloClient.connected()) {
+        Serial.print("Conectando a MQTT Cedalo...");
+        if (cedaloClient.connect("usuario", cedalo_user, cedalo_password )) {
+            Serial.println("Conectado a Cedalo");
+        } else {
+            Serial.print("Falló, rc=");
+            Serial.println(cedaloClient.state());
+            delay(5000); // Intentar cada 5 segundos si no se conecta
+        }
+    }
+}
+
+// Función para enviar los datos a ThingsBoard y Cedalo
+void sendData() {
+    // Crear el payload JSON con los datos de LoRa
+    String telemetryPayload = "{\"voltage\": " + String(testVoltage, 2) +
+                              ", \"current\": " + String(testCurrent, 2) +
+                              ", \"sonda\": " + String(testSonda, 2) +
+                              ", \"temperature\": " + String(testTemperature, 2) +
+                              ", \"humidity\": " + String(testHumidity, 2) +
+                              ", \"power\": " + String(power, 2) + 
+                              ", \"consumption\": " + String(consumption, 2) + "}";
+
+    // Crear el payload JSON con los datos de LoRa (para Atributos)
+    String attributesPayload = "{\"voltage\": " + String(testVoltage, 2) +
+                               ", \"current\": " + String(testCurrent, 2) +
+                               ", \"sonda\": " + String(testSonda, 2) +
+                               ", \"temperature\": " + String(testTemperature, 2) +
+                               ", \"humidity\": " + String(testHumidity, 2) +
+                               ", \"power\": " + String(power, 2) + 
+                               ", \"consumption\": " + String(consumption, 2) + "}";
+
+
+
+    // Enviar la Telemetría a ThingsBoard
+    if (client.publish("v1/devices/me/telemetry", telemetryPayload.c_str())) {
+        Serial.println("Telemetría enviada a ThingsBoard");
+    } else {
+        Serial.println("Error al enviar Telemetría a ThingsBoard");
+    }
+
+    // Enviar los Atributos a ThingsBoard
+    if (client.publish("v1/devices/me/attributes", attributesPayload.c_str())) {
+        Serial.println("Atributos enviados a ThingsBoard");
+    } else {
+        Serial.println("Error al enviar Atributos a ThingsBoard");
+    }
+    // Enviar los datos a Cedalo
+    if (cedaloClient.publish(cedalo_topic, telemetryPayload.c_str())) {
+        Serial.println("Datos enviados a Cedalo");
+    } else {
+        Serial.println("Error al enviar datos a Cedalo");
+    }
+
+    delay(4000);
+}
+
+// Función de inicialización
 void setup() {
-  Serial.begin(115200);
-  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+    Serial.begin(115200);
+    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
-  // Conexión WiFi
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nConectado a WiFi");
+    // Inicializar Wi-Fi
+    setup_wifi();
 
-  // Inicializar ThingsBoard con MQTT
-  mqttClient.setId(TOKEN);
-  mqttClient.setUsernamePassword(TOKEN, nullptr);
+    // Configurar MQTT para ThingsBoard
+    client.setServer(mqtt_server, mqtt_port);
 
-  if (!mqttClient.connect(THINGSBOARD_SERVER, 1883)) {
-    Serial.println("Error al conectar con el servidor MQTT");
-  } else {
-    Serial.println("Conexión exitosa al servidor MQTT");
-    setupRPC(); // Configurar callbacks para recibir comandos RPC
-  }
+    // Configurar MQTT para Cedalo
+    cedaloClient.setServer(cedalo_host, cedalo_port);
 
-  // Configurar LoRa
-  RadioEvents.TxDone = OnTxDone;
-  RadioEvents.RxDone = OnRxDone;
-  Radio.Init(&RadioEvents);
-
-  Radio.SetChannel(RF_FREQUENCY);
-  Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR, LORA_CODINGRATE,
-                    0, LORA_PREAMBLE_LENGTH, LORA_SYMBOL_TIMEOUT,
-                    LORA_FIX_LENGTH_PAYLOAD_ON, 0, true, 0, 0, LORA_IQ_INVERSION_ON, true);
-  Radio.Rx(0); // Iniciar en modo recepción
+    // Configuración de LoRa
+    RadioEvents.RxDone = OnRxDone;
+    Radio.Init(&RadioEvents);
+    Radio.SetChannel(RF_FREQUENCY);
+    Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
+                       LORA_CODINGRATE, 0, LORA_PREAMBLE_LENGTH,
+                       LORA_SYMBOL_TIMEOUT, LORA_FIX_LENGTH_PAYLOAD_ON,
+                       0, true, 0, 0, LORA_IQ_INVERSION_ON, true);
 }
 
+// Bucle principal
 void loop() {
-  // Actualizar datos a ThingsBoard
-  unsigned long currentTime = millis();
+    // Conectar o reconectar a ThingsBoard y Cedalo
+    if (!client.connected()) {
+        reconnectThingsBoard();
+    }
+    if (!cedaloClient.connected()) {
+        reconnectCedalo();
+    }
 
-  if (currentTime - lastDataUpdate >= 5000) {
-    lastDataUpdate = currentTime;
+    // Procesar mensajes MQTT
+    client.loop();
+    cedaloClient.loop();
 
-    tb.sendTelemetryData("Voltage", String(voltage));
-    tb.sendTelemetryData("Current", String(current));
-    tb.sendTelemetryData("Signal", String(signal));
-    tb.sendTelemetryData("RelayStatus", relayStatus); // Enviar como entero
+    // Enviar los datos de LoRa a ThingsBoard y Cedalo si la conexión MQTT está activa
+    if (client.connected() && cedaloClient.connected()) {
+        sendData();
+    } else {
+        Serial.println("No se pudo conectar a los brokers MQTT. Intentando nuevamente...");
+    }
 
-    Serial.printf("Datos enviados a ThingsBoard:\nVoltage: %.2f, Current: %.2f, Signal: %.2f, Relay: %d\n",
-                  voltage, current, signal, relayStatus);
-  }
+    // Si LoRa está inactivo, entra en modo RX
+    if (lora_idle) {
+        lora_idle = false;
+        Serial.println("Modo RX activado...");
+        Radio.Rx(0); // Inicia la recepción
+    }
 
-  // Calcular y enviar potencia y consumo cada 10 segundos
-  if (currentTime - lastPowerUpdate >= 10000) {
-    lastPowerUpdate = currentTime;
+    // Asegúrate de que las interrupciones LoRa se procesen correctamente
+    Radio.IrqProcess();
 
-    power = voltage * current;
-    consumption += power * (10.0 / 3600.0); // kWh aproximado
+    // Calcular potencia y consumo cada 5 segundos
+    unsigned long currentTime = millis();
+    if (currentTime - lastPowerCalcTime >= powerCalcInterval) {
+        lastPowerCalcTime = currentTime;
 
-    tb.sendTelemetryData("Power", String(power));
-    tb.sendTelemetryData("Consumption", String(consumption));
+        // Calcular la potencia en W (Voltaje * Corriente)
+        power = testVoltage * testCurrent;
 
-    Serial.printf("Potencia: %.2f W, Consumo acumulado: %.2f kWh\n", power, consumption);
-  }
+        // Calcular el consumo en Wh (Potencia * tiempo en horas)
+        consumption += (power * (powerCalcInterval / 1000.0)) / 3600.0;  // En Wh
 
-  tb.loop(); // Mantener conexión con ThingsBoard
+        // Mostrar en el monitor serial
+        Serial.printf("Potencia: %.2f W, Consumo: %.2f Wh\n", power, consumption);
+    }
 }
 
-void OnTxDone() {
-  Serial.println("Transmisión completada.");
-}
-
+// Función que maneja los paquetes recibidos
 void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
-  payload[size] = '\0'; // Finalizar string
-  String receivedData = String((char *)payload);
+    rssi = rssi;
+    rxSize = size;
+    memcpy(rxpacket, payload, size);
+    rxpacket[size] = '\0';  // Finaliza el string correctamente
+    Radio.Sleep();  // Pone el radio en modo de bajo consumo después de recibir
 
-  Serial.printf("Paquete recibido: %s\n", receivedData.c_str());
+    // Imprimir el mensaje recibido
+    Serial.printf("\r\nPaquete recibido: \"%s\" con RSSI: %d, longitud: %d\r\n", rxpacket, rssi, rxSize);
 
-  // Parsear datos recibidos
-  if (sscanf(receivedData.c_str(), "V:%f,C:%f,S:%f,R:%d", &voltage, &current, &signal, &relayStatus) == 4) {
-    Serial.printf("Datos parseados: Voltage=%.2f, Current=%.2f, Signal=%.2f, Relay=%d\n",
-                  voltage, current, signal, relayStatus);
-  } else {
-    Serial.println("Error al parsear los datos recibidos.");
-  }
-}
+    // Intentar parsear los datos
+    if (sscanf(rxpacket, "V:%f,C:%f,S:%f,T:%f,H:%f", &testVoltage, &testCurrent, &testSonda, &testTemperature, &testHumidity) == 5) {
+        // Si el parseo es exitoso, imprimir los valores
+        Serial.printf("Datos parseados:\nVoltage=%.2f V\nCurrent=%.2f A\nSonda=%.2f\n", testVoltage, testCurrent, testSonda);
+    } else {
+        // Si el parseo falla, imprimir un mensaje de error
+        Serial.println("Error al parsear los datos recibidos.");
+    }
 
-// Función para procesar cambios en el estado del relé desde ThingsBoard
-void processRelayCommand(int command) {
-  if (command == 1 || command == 0) {
-    relayStatus = command;
-
-    // Enviar instrucción al módulo A
-    sendRelayInstructionToA();
-
-    // Reanudar recepción LoRa después de 5 segundos
-    delay(5000);
-    resetLoRaReception();
-  }
-}
-
-// Callback para recibir datos desde ThingsBoard
-void onRelayControlReceived(const RPC_Response &response) {
-  if (response.key == "RelayControl") {
-    int command = response.value.toInt();
-    processRelayCommand(command);
-  }
-}
-
-// Configurar el callback para RPC en el setup
-void setupRPC() {
-  tb.subscribeRPC("RelayControl", onRelayControlReceived);
-}
-
-// Función para enviar instrucción al módulo A
-void sendRelayInstructionToA() {
-  snprintf(txPacket, BUFFER_SIZE, "RELAY:%d", relayStatus);
-
-  // Interrumpir recepción de datos y enviar comando al módulo A
-  Radio.Standby();
-  Radio.Send((uint8_t *)txPacket, strlen(txPacket));
-  Serial.printf("Comando enviado al módulo A: %s\n", txPacket);
-}
-
-// Función para reanudar recepción de datos LoRa
-void resetLoRaReception() {
-  Serial.println("Reanudando recepción de datos LoRa...");
-  Radio.Rx(0); // Volver a modo recepción
+    lora_idle = true;  // Cambia el estado a inactivo, permitiendo que LoRa reciba el siguiente paquete
 }
 
 
