@@ -1,0 +1,91 @@
+#include <LoRaWan_APP.h>
+#include <BluetoothSerial.h>
+
+// Configuración LoRa
+#define RF_FREQUENCY 915000000
+#define TX_OUTPUT_POWER 7
+
+#define LORA_BANDWIDTH 0
+#define LORA_SPREADING_FACTOR 7
+#define LORA_CODINGRATE 1
+#define LORA_PREAMBLE_LENGTH 8
+#define LORA_SYMBOL_TIMEOUT 0
+#define LORA_FIX_LENGTH_PAYLOAD_ON false
+#define LORA_IQ_INVERSION_ON false
+
+// Variables a enviar
+float voltage;
+float current;
+float sonda = 0; // Inicializamos a 0 hasta que se reciba un valor por Bluetooth
+float temperature;
+float humidity;
+
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 5000; // Enviar datos cada 5 segundos
+
+static RadioEvents_t RadioEvents;
+BluetoothSerial SerialBT;
+
+// Función para inicializar LoRa
+void setupLoRa() {
+    RadioEvents.TxDone = OnTxDone;
+    RadioEvents.RxDone = nullptr;
+    Radio.Init(&RadioEvents);
+
+    Radio.SetChannel(RF_FREQUENCY);
+    Radio.SetTxConfig(MODEM_LORA, TX_OUTPUT_POWER, 0, LORA_BANDWIDTH,
+                      LORA_SPREADING_FACTOR, LORA_CODINGRATE,
+                      LORA_PREAMBLE_LENGTH, false,
+                      true, 0, 0, LORA_IQ_INVERSION_ON, 3000);
+}
+
+// Función que se llama al completar la transmisión
+void OnTxDone() {
+    Serial.println("Datos transmitidos.");
+    Radio.Rx(0); // Volver a modo recepción (por si se requiere en el futuro)
+}
+
+void setup() {
+    Serial.begin(115200);
+    SerialBT.begin("Heltec_Tracker"); // Nombre Bluetooth
+    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+
+    // Configurar LoRa
+    setupLoRa();
+
+    Serial.println("Módulo transmisor inicializado.");
+}
+
+void loop() {
+    unsigned long currentTime = millis();
+
+    // Recepción de datos por Bluetooth
+    if (SerialBT.available()) {
+        String received = SerialBT.readStringUntil('\n'); // Leer hasta un salto de línea
+        sonda = received.toFloat(); // Convertir a float
+        Serial.printf("Dato recibido por Bluetooth: %.2f\n", sonda);
+    }
+
+    // Envío por LoRa
+    if (currentTime - lastSendTime >= sendInterval) {
+        lastSendTime = currentTime;
+
+        // Generar datos aleatorios para voltaje, corriente, temperatura y humedad
+        voltage = random(210, 240) + random(0, 100) / 100.0;    // Voltaje entre 210V y 240V
+        current = random(1, 15) + random(0, 100) / 100.0;       // Corriente entre 1A y 15A
+        temperature = random(15, 30) + random(0, 100) / 100.0;  // Temperatura entre 15°C y 30°C
+        humidity = random(30, 80) + random(0, 100) / 100.0;     // Humedad entre 30% y 80%
+
+        // Crear mensaje para enviar
+        char txPacket[128];
+        snprintf(txPacket, sizeof(txPacket),
+                 "V:%.2f,C:%.2f,S:%.2f,T:%.2f,H:%.2f", 
+                 voltage, current, sonda, temperature, humidity);
+
+        // Mostrar datos en Serial
+        Serial.printf("Enviando datos: %s\n", txPacket);
+
+        // Enviar datos
+        Radio.Send((uint8_t *)txPacket, strlen(txPacket));
+    }
+}
