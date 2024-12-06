@@ -1,0 +1,39 @@
+#include <BluetoothSerial.h>
+
+BluetoothSerial SerialBT;
+
+// Configuración del ADC
+#define ADC_PIN 36 // Pin analógico del ESP32 (puedes cambiarlo según tu conexión)
+#define ADC_RESOLUTION 4096 // Resolución del ADC (12 bits en ESP32)
+#define ADC_REF_VOLTAGE 3300 // Voltaje de referencia en mV
+
+// Variables para la lectura del ADC
+float potenciaReflejada_mV = 0;
+
+void setup() {
+    Serial.begin(115200);
+    SerialBT.begin("ESP32_Sonda"); // Nombre del Bluetooth
+    
+    // Configuración del ADC
+    analogReadResolution(12); // Resolución de 12 bits
+    analogSetAttenuation(ADC_11db); // Configuración para señales de 0-3.3V
+
+    Serial.println("ESP32 Bluetooth Transmisor inicializado.");
+}
+
+void loop() {
+    // Leer el valor analógico del pin ADC
+    int adcValue = analogRead(ADC_PIN);
+
+    // Convertir el valor ADC a mV
+    potenciaReflejada_mV = (adcValue * ADC_REF_VOLTAGE) / ADC_RESOLUTION;
+
+    // Enviar la potencia reflejada por Bluetooth
+    String dataToSend = String(potenciaReflejada_mV, 2); // Convertir a String con 2 decimales
+    SerialBT.println(dataToSend);
+
+    // Mostrar el valor en el Monitor Serial para debug
+    Serial.printf("Potencia reflejada: %.2f mV\n", potenciaReflejada_mV);
+
+    delay(1000); // Intervalo de 1 segundo entre lecturas
+}
