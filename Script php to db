@@ -1,0 +1,94 @@
+<?php
+// Cargar la biblioteca PHP para MQTT
+require('vendor/autoload.php'); // Asegúrate de que esta ruta es correcta
+
+// Configuración de Cedalo MQTT
+$cedalo_host = 'pf-ij2bkvcv06wu0l1enbgp.cedalo.cloud';
+$cedalo_port = 1883;
+$cedalo_user = 'cliente';              // Usuario para Cedalo
+$cedalo_password = '12345Asd';         // Contraseña para Cedalo
+$cedalo_topic = 'esp32/data';          // Tópico al que se publican los datos
+
+// Configuración de la base de datos
+$db_host = 'localhost'; // Cambiar si es necesario
+$db_user = 'root';      // Usuario de la base de datos
+$db_password = '';      // Contraseña de la base de datos
+$db_name = 'iot_telsat';
+
+// Conectar a la base de datos
+$conn = new mysqli($db_host, $db_user, $db_password, $db_name);
+
+// Verificar conexión a la base de datos
+if ($conn->connect_error) {
+    die("Error de conexión a la base de datos: " . $conn->connect_error);
+}
+echo "Conexión exitosa a la base de datos.\n";
+
+// Crear un cliente MQTT
+$mqtt = new Bluerhinos\phpMQTT($cedalo_host, $cedalo_port, 'cliente');
+
+// Conectar al broker MQTT de Cedalo
+if (!$mqtt->connect(true, NULL, $cedalo_user, $cedalo_password)) {
+    echo "Conexión fallida al servidor MQTT Cedalo\n";
+    exit(1);
+}
+
+// Suscribirse al tópico
+$mqtt->subscribe([$cedalo_topic => ['qos' => 0, 'function' => 'msgReceived']]);
+
+echo "Conectado a Cedalo y esperando mensajes...\n";
+
+// Función que se ejecuta cuando se recibe un mensaje en el tópico
+function msgReceived($topic, $msg){
+    global $conn; // Usar la conexión a la base de datos definida globalmente
+
+    // Imprimir el mensaje recibido
+    echo "Mensaje recibido en el tópico '$topic':\n$msg\n";
+
+    // Decodificar el mensaje JSON
+    $data = json_decode($msg, true);
+
+    // Validar los datos antes de insertarlos en la base de datos
+    if (isset($data['voltage'], $data['current'], $data['sonda'], $data['temperature'], $data['humidity'], $data['power'], $data['consumption'])) {
+        $voltage = $data['voltage'];
+        $current = $data['current'];
+        $sonda = $data['sonda'];
+        $temperature = $data['temperature'];
+        $humidity = $data['humidity'];
+        $power = $data['power'];
+        $consumption = $data['consumption'];
+
+        // Insertar los datos en la tabla
+        $stmt = $conn->prepare("INSERT INTO telemetry_data (voltage, current, sonda, temperature, humidity, power, consumption) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        if ($stmt === false) {
+            echo "Error preparando la consulta SQL: " . $conn->error . "\n";
+            return;
+        }
+
+        // Vincular parámetros y ejecutar la consulta
+        $stmt->bind_param("ddddddd", $voltage, $current, $sonda, $temperature, $humidity, $power, $consumption);
+
+        if ($stmt->execute()) {
+            echo "Datos insertados en la base de datos correctamente.\n";
+        } else {
+            echo "Error al insertar los datos: " . $stmt->error . "\n";
+        }
+
+        $stmt->close();
+    } else {
+        echo "Error: Datos incompletos o inválidos recibidos.\n";
+    }
+}
+
+// Esperar y procesar los mensajes MQTT
+while ($mqtt->proc()) {
+    // Continuar escuchando los mensajes
+}
+
+// Desconectar del servidor Cedalo
+echo "Desconectando del servidor Cedalo...\n";
+$mqtt->close();
+
+// Cerrar conexión a la base de datos
+$conn->close();
+?>
