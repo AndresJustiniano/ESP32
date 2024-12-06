@@ -1,10 +1,13 @@
 #include <LoRaWan_APP.h>
-#include <BluetoothSerial.h>
+#include <Wire.h>
+#include <Adafruit_ADS1015.h>
+#include <SPI.h>
+#include <AD7705.h>
+#include <DHT.h>
 
 // Configuración LoRa
 #define RF_FREQUENCY 915000000
 #define TX_OUTPUT_POWER 7
-
 #define LORA_BANDWIDTH 0
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODINGRATE 1
@@ -13,18 +16,34 @@
 #define LORA_FIX_LENGTH_PAYLOAD_ON false
 #define LORA_IQ_INVERSION_ON false
 
+// Configuración del DHT11
+#define DHT_PIN 4     // Pin al que está conectado el DHT11 (ajústalo según tu conexión)
+#define DHT_TYPE DHT11 // Tipo de sensor, en este caso DHT11
+DHT dht(DHT_PIN, DHT_TYPE);  // Instanciamos el objeto DHT
+
+// Inicialización de los ADCs
+Adafruit_ADS1115 ads;  // ADS1115 para medir corriente
+AD7705 ad7705;         // AD7705 para medir voltaje
+
+// Definición del pin para el control del SSR (Relé de Estado Sólido)
+#define SSR_PIN 14  // Pin donde se conecta el relé (ajústalo según tu configuración)
+
 // Variables a enviar
-float voltage;
-float current;
-float sonda = 0; // Inicializamos a 0 hasta que se reciba un valor por Bluetooth
-float temperature;
-float humidity;
+float voltage = 0;   // Voltaje medido por ZMPT101B
+float current = 0;   // Corriente medida por ACS712
+float sonda = 0;     // La variable sonda que puedes recibir via Bluetooth
+float temperature = 0;   // Temperatura leída desde DHT11
+float humidity = 0;      // Humedad leída desde DHT11
+
+// Variables para la lógica del relé
+unsigned long relayActiveTime = 0; // Tiempo de activación del relé
+const unsigned long relayDelay = 5000; // Tiempo de 5 segundos para activar el relé
+bool relayStatus = false; // Estado actual del relé
 
 unsigned long lastSendTime = 0;
 const unsigned long sendInterval = 5000; // Enviar datos cada 5 segundos
 
 static RadioEvents_t RadioEvents;
-BluetoothSerial SerialBT;
 
 // Función para inicializar LoRa
 void setupLoRa() {
@@ -45,47 +64,91 @@ void OnTxDone() {
     Radio.Rx(0); // Volver a modo recepción (por si se requiere en el futuro)
 }
 
+// Función para controlar el relé basado en las condiciones de voltaje
+void controlRelay(float voltage) {
+    if ((voltage < 200.0 || voltage > 240.0) && !relayStatus) {
+        // Si el voltaje está fuera del rango (bajo o alto), apagamos el relé
+        relayActiveTime = millis(); // Registrar el tiempo de activación
+        digitalWrite(SSR_PIN, LOW); // Desactivar el SSR
+        relayStatus = false;  // Cambiar el estado del relé
+        Serial.println("Relé desactivado (fuera de rango de voltaje).");
+    } 
+    else if (voltage >= 200.0 && voltage <= 240.0 && !relayStatus) {
+        // Si el voltaje está dentro del rango, activamos el relé
+        digitalWrite(SSR_PIN, HIGH);  // Activar el SSR
+        relayStatus = true;  // Cambiar el estado del relé
+        Serial.println("Relé activado (voltaje en rango seguro).");
+    }
+    else if ((voltage < 200.0 || voltage > 240.0) && relayStatus) {
+        // Si el voltaje sigue fuera del rango y el relé está activado, comprobamos el intervalo
+        if (millis() - relayActiveTime >= relayDelay) {
+            // Si ha pasado más de 5 segundos, mantenemos el relé apagado
+            digitalWrite(SSR_PIN, LOW);  // Mantener SSR apagado
+            relayStatus = false;  // Cambiar el estado del relé
+            Serial.println("Relé desactivado (fuera de rango por 5 segundos).");
+        }
+    }
+}
+
 void setup() {
     Serial.begin(115200);
-    SerialBT.begin("Heltec_Tracker"); // Nombre Bluetooth
     Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 
     // Configurar LoRa
     setupLoRa();
 
-    Serial.println("Módulo transmisor inicializado.");
+    // Configuración de ADCs
+    ads.begin();  // Inicializar ADS1115
+    ad7705.begin();  // Inicializar AD7705
+
+    // Configuración del DHT11
+    dht.begin();  // Inicializar el sensor DHT11
+
+    // Configuración del pin SSR como salida
+    pinMode(SSR_PIN, OUTPUT);
+    digitalWrite(SSR_PIN, LOW);  // Iniciar el relé apagado
+
+    Serial.println("Módulo transmisor LoRa con ADCs y DHT11 configurado.");
 }
 
 void loop() {
     unsigned long currentTime = millis();
 
-    // Recepción de datos por Bluetooth
-    if (SerialBT.available()) {
-        String received = SerialBT.readStringUntil('\n'); // Leer hasta un salto de línea
-        sonda = received.toFloat(); // Convertir a float
-        Serial.printf("Dato recibido por Bluetooth: %.2f\n", sonda);
+    // Leer el valor de voltaje desde el sensor ZMPT101B (AD7705)
+    long adc_voltage = ad7705.readADC(); // Lee el valor bruto del AD7705
+    voltage = (adc_voltage * 3.3) / 1024.0;  // Convierte la lectura a voltaje (ajusta según tu calibración)
+
+    // Leer el valor de corriente desde el sensor ACS712 (ADS1115)
+    int16_t rawCurrent = ads.readADC_SingleEnded(0);  // Leer de canal 0 (ajusta según tu configuración)
+    current = (rawCurrent * 0.1875) / 1000.0;  // Convierte a amperios (ajusta según calibración)
+
+    // Leer la temperatura y humedad desde el DHT11
+    temperature = dht.readTemperature(); // Leer temperatura en °C
+    humidity = dht.readHumidity(); // Leer humedad en %
+
+    // Verificar si la lectura del DHT11 fue exitosa
+    if (isnan(temperature) || isnan(humidity)) {
+        Serial.println("Error al leer desde el DHT11");
     }
 
-    // Envío por LoRa
+    // Controlar el relé en función del voltaje
+    controlRelay(voltage);
+
+    // Crear mensaje para enviar
+    char txPacket[128];
+    snprintf(txPacket, sizeof(txPacket),
+             "V:%.2f,C:%.2f,S:%.2f,T:%.2f,H:%.2f", 
+             voltage, current, sonda, temperature, humidity);
+
+    // Mostrar datos en Serial
+    Serial.printf("Enviando datos: %s\n", txPacket);
+
+    // Enviar datos
+    Radio.Send((uint8_t *)txPacket, strlen(txPacket));
+
+    // Enviar datos cada intervalo especificado
     if (currentTime - lastSendTime >= sendInterval) {
         lastSendTime = currentTime;
-
-        // Generar datos aleatorios para voltaje, corriente, temperatura y humedad
-        voltage = random(210, 240) + random(0, 100) / 100.0;    // Voltaje entre 210V y 240V
-        current = random(1, 15) + random(0, 100) / 100.0;       // Corriente entre 1A y 15A
-        temperature = random(15, 30) + random(0, 100) / 100.0;  // Temperatura entre 15°C y 30°C
-        humidity = random(30, 80) + random(0, 100) / 100.0;     // Humedad entre 30% y 80%
-
-        // Crear mensaje para enviar
-        char txPacket[128];
-        snprintf(txPacket, sizeof(txPacket),
-                 "V:%.2f,C:%.2f,S:%.2f,T:%.2f,H:%.2f", 
-                 voltage, current, sonda, temperature, humidity);
-
-        // Mostrar datos en Serial
-        Serial.printf("Enviando datos: %s\n", txPacket);
-
-        // Enviar datos
-        Radio.Send((uint8_t *)txPacket, strlen(txPacket));
     }
 }
+
